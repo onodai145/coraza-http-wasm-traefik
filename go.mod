@@ -1,4 +1,4 @@
-module github.com/jcchavezs/coraza-http-wasm-traefik
+module github.com/onodai145/coraza-http-wasm-traefik
 
 go 1.21.0
 

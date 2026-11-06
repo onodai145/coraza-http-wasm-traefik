@@ -1,77 +1,37 @@
-name: Release
-
-run-name: Release of ${{ inputs.version }}
-
+name: Package reviewed local plugin
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "coraza-http-wasm version e.g. v0.2.1"
+      wasm_version:
+        description: Reviewed WASM release tag
         required: true
-        type: string
-
-env:
-  GO_VERSION: "1.21.x"
-
+      wasm_sha256:
+        description: Reviewed WASM SHA256
+        required: true
+permissions:
+  contents: read
 jobs:
-  release:
+  package:
     runs-on: ubuntu-latest
-
-    permissions:
-      # Give the default GITHUB_TOKEN write permission to commit and push the
-      # added or changed files to the repository.
-      contents: write
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Go
-        uses: actions/setup-go@v3
+      - uses: jdx/mise-action@v3
+      - run: go run mage.go e2eLocal
+        env:
+          VERSION: ${{ inputs.wasm_version }}
+          WASM_SHA256: ${{ inputs.wasm_sha256 }}
+      - run: docker compose -p coraza-crs up -d traefik
+      - run: python3 scripts/smoke.py
+      - if: always()
+        run: docker compose -p coraza-crs down
+      - run: cp LICENSE build/LICENSE
+      - uses: actions/upload-artifact@v4
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Download coraza-http-wasm artifact
-        run: go run mage.go downloadArtifact
-        env:
-          VERSION: ${{ github.event.inputs.version }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run e2e tests
-        run: go run mage.go e2eLocal
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update version to ${{ github.event.inputs.version }}
-        run: go run mage.go updateVersion
-        env:
-          VERSION: ${{ github.event.inputs.version }}
-
-      - name: Makes sure there are changes
-        run: test $(git status --porcelain=1 | wc -l) -gt 0
-
-      - uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          file_pattern: "*.yaml"
-          add_options: "-u"
-          branch: main
-          commit_message: "chore: update coraza-http-wasm version to ${{ github.event.inputs.version }}"
-          tagging_message: "${{ github.event.inputs.version }}"
-
-      - name: Create draft release
-        run: |
-          set +e
-          echo "Creating release $VERSION"
-          gh release create $VERSION --draft --title "$VERSION"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.event.inputs.version }}
-
-      - name: Push build artifact to release
-        run: |
-          set +e
-          zip -j build/coraza-http-wasm-$VERSION.zip .traefik.yml build/coraza-http-wasm.wasm LICENSE
-          gh release upload $VERSION ./build/coraza-http-wasm-$VERSION.zip --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.event.inputs.version }}
+          name: coraza-local-plugin
+          include-hidden-files: true
+          path: |
+            build/.traefik.yml
+            build/coraza-http-wasm.wasm
+            build/SOURCE
+            build/SHA256SUMS
+            build/LICENSE
