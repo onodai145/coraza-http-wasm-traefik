@@ -33,6 +33,8 @@ jobs:
           VERSION: ${{ inputs.wasm_version }}
           WASM_SHA256: ${{ inputs.wasm_sha256 }}
       - run: docker compose -p coraza-crs up -d traefik
-      - run: python3 scripts/smoke.py
+      - run: python3 scripts/verify_local_modes.py
+      - if: failure()
+        run: docker compose -p coraza-crs logs
       - if: always()
         run: docker compose -p coraza-crs down

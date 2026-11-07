@@ -41,3 +41,18 @@ for name, path, data, attack in [
     print(f'{engine} {name}: {actual} (expected {expected})')
     if actual != expected:
         raise SystemExit(1)
+
+# A 200 alone does not prove that body inspection preserved the input.
+# Verify what the real backend received, including bodies larger than the SDK buffer.
+import json
+for size in (256, 4096, 16384):
+    payload = 'a' * size
+    data = urllib.parse.urlencode({'q': payload}).encode()
+    request = urllib.request.Request(base + '/anything', data=data, headers={
+        'User-Agent': 'Mozilla/5.0', 'Content-Type': 'application/x-www-form-urlencoded'})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        result = json.load(response)
+    actual = result.get('form', {}).get('q')
+    if actual != [payload]:
+        raise SystemExit(f'{engine} body preservation failed for {size} bytes')
+    print(f'{engine} body_preservation_{size}: OK')

@@ -225,10 +225,12 @@ func e2e(source e2eSource) error {
 	}
 
 	if err = sh.RunV("go", "run", "github.com/corazawaf/coraza/v3/http/e2e/cmd/httpe2e@v3.2.1", "--proxy-hostport",
-		"http://"+proxyHost, "--httpbin-hostport", "http://"+httpbinHost); err != nil {
+		"http://"+proxyHost, "--httpbin-hostport", "http://"+httpbinHost); err == nil {
+		err = sh.RunV("python3", "scripts/body_limits.py", "--base", "http://"+proxyHost, "--limit", "13631488", "--check-order")
+	}
+	if err != nil {
 		sh.RunV("docker", append(dockerComposeArgs, "logs", "e2e_traefik_"+string(source))...)
 	}
-
 	return err
 }
 
