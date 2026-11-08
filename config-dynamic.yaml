@@ -27,6 +27,9 @@ http:
         coraza:
           directives:
             - Include @coraza.conf-recommended
+            # WASM cannot spill inspected bodies to disk: keep both limits equal.
+            - SecRequestBodyLimit 13107200
+            - SecRequestBodyInMemoryLimit 13107200
             - SecRuleEngine On
             - SecAuditEngine Off
             - Include @crs-setup.conf.example

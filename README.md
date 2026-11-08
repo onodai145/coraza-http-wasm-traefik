@@ -27,6 +27,9 @@ docker compose -p coraza-local down
 アップロード要件と同時リクエスト数に応じて変更してください。`0`は無制限のため使用しません。
 
 上限超過はContent-Length指定・chunked転送の両方でHTTP 413となり、DetectionOnlyでも適用します。
+WASMはCorazaの検査本文をディスクへ退避できないため、`SecRequestBodyInMemoryLimit`を
+`SecRequestBodyLimit`と同じ値に設定してください。サンプルは両方`13107200`（12.5 MiB）です。
+上流推奨設定のメモリ上限128 KiBをそのまま使うと、それを超える本文の検査でエラーになります。
 Corazaの検査上限`SecRequestBodyLimit`とは別の制限です。DetectionOnlyではCoraza標準の
 ProcessPartialを維持し、検査上限を超えてもTraefikの上限以内なら元の本文をバックエンドへ渡します。
 このWASMはhost v0.7.0の本文保持不具合を回避するため本文を再構築し、hostがその全量をメモリに保持します。
