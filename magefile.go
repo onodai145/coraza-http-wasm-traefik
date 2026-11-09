@@ -4,12 +4,15 @@ package main
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 
 	_ "embed"
@@ -47,39 +50,30 @@ func download(url, dst string) error {
 }
 
 func unzip(name string) error {
-	fmt.Printf("Unzipping %s\n", name)
 	reader, err := zip.OpenReader(name)
 	if err != nil {
 		return err
 	}
 	defer reader.Close()
-
-	for _, file := range reader.File {
-		in, err := file.Open()
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-
-		dir := path.Dir(name)
-		os.MkdirAll(dir, 0777)
-
-		out, err := os.Create(path.Join(dir, file.Name))
-		if err != nil {
-			return err
-		}
-		defer out.Close()
-
-		_, err = io.Copy(out, in)
-		if err != nil {
-			return err
-		}
+	if len(reader.File) != 1 || reader.File[0].Name != "coraza-http-wasm.wasm" || reader.File[0].UncompressedSize64 > 32<<20 {
+		return errors.New("archive must contain only coraza-http-wasm.wasm")
 	}
-
-	return nil
+	in, err := reader.File[0].Open()
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	data, err := io.ReadAll(io.LimitReader(in, 32<<20))
+	if err != nil {
+		return err
+	}
+	if len(data) < 8 || string(data[:8]) != "\x00asm\x01\x00\x00\x00" {
+		return errors.New("invalid WASM artifact")
+	}
+	return installWasm(path.Dir(name), data, "archive:"+name)
 }
 
-const artifactURL = "https://github.com/jcchavezs/coraza-http-wasm/releases/download/{version}/coraza-http-wasm-{version}.zip"
+const artifactURL = "https://github.com/onodai145/coraza-http-wasm/releases/download/{version}/coraza-http-wasm-{version}.zip"
 
 func downloadHTTPWasmArtifact(version, dir string) error {
 	url := strings.Replace(artifactURL, "{version}", version, 2)
@@ -96,17 +90,16 @@ func downloadHTTPWasmArtifact(version, dir string) error {
 
 func getHttpWasmVersion() (string, error) {
 	version := os.Getenv("VERSION")
-	if version == "" {
-		var err error
-		version, err = sh.Output("gh", "api", "repos/jcchavezs/coraza-http-wasm/releases", "-q", ".[0].tag_name")
-		if err != nil {
-			return "", err
-		}
+	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$`).MatchString(version) {
+		return "", errors.New("set VERSION to an explicit release tag, e.g. v0.4.0-onodai.1")
 	}
 	return version, nil
 }
 
 func DownloadArtifact() error {
+	if os.Getenv("WASM_SHA256") == "" {
+		return errors.New("WASM_SHA256 is required for release downloads")
+	}
 	var err error
 	if err = os.Mkdir("build", 0755); err != nil && !os.IsExist(err) {
 		return err
@@ -117,7 +110,10 @@ func DownloadArtifact() error {
 		return err
 	}
 
-	return downloadHTTPWasmArtifact(version, "./build")
+	if err := downloadHTTPWasmArtifact(version, "./build"); err != nil {
+		return err
+	}
+	return writeProvenance("release:" + version)
 }
 
 func copy(src, dst string) error {
@@ -135,6 +131,69 @@ func copy(src, dst string) error {
 
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// PrepareLocal installs a reviewed local build, or an explicitly selected release.
+func PrepareLocal() error {
+	if err := os.MkdirAll("build", 0755); err != nil {
+		return err
+	}
+	source := os.Getenv("WASM_SOURCE")
+	if source == "" {
+		if err := DownloadArtifact(); err != nil {
+			return err
+		}
+	} else {
+		data, err := os.ReadFile(source)
+		if err != nil {
+			return err
+		}
+		if len(data) < 8 || string(data[:8]) != "\x00asm\x01\x00\x00\x00" {
+			return errors.New("invalid WASM source")
+		}
+		if err := installWasm("build", data, source); err != nil {
+			return err
+		}
+	}
+	return copy(".traefik.yml", "build/.traefik.yml")
+}
+
+func writeProvenance(source string) error {
+	data, err := os.ReadFile("build/coraza-http-wasm.wasm")
+	if err != nil {
+		return err
+	}
+	return installWasm("build", data, source)
+}
+
+func installWasm(dir string, data []byte, source string) error {
+	sum := sha256.Sum256(data)
+	digest := hex.EncodeToString(sum[:])
+	if expected := os.Getenv("WASM_SHA256"); expected != "" && !strings.EqualFold(expected, digest) {
+		return fmt.Errorf("WASM SHA256 mismatch: got %s", digest)
+	}
+	tmp, err := os.CreateTemp(dir, ".wasm-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path.Join(dir, "coraza-http-wasm.wasm")); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path.Join(dir, "SHA256SUMS"), []byte(digest+"  coraza-http-wasm.wasm\n"), 0644); err != nil {
+		return err
+	}
+	return os.WriteFile(path.Join(dir, "SOURCE"), []byte(source+"\n"), 0644)
 }
 
 type e2eSource string
@@ -158,34 +217,31 @@ func e2e(source e2eSource) error {
 
 	proxyHost := os.Getenv("TRAEFIK_HOST")
 	if proxyHost == "" {
-		proxyHost = "localhost:8080"
+		proxyHost = "localhost:18080"
 	}
 	httpbinHost := os.Getenv("HTTPBIN_HOST")
 	if httpbinHost == "" {
-		httpbinHost = "localhost:8000"
+		httpbinHost = "localhost:18000"
 	}
 
-	if err = sh.RunV("go", "run", "github.com/corazawaf/coraza/v3/http/e2e/cmd/httpe2e@main", "--proxy-hostport",
-		"http://"+proxyHost, "--httpbin-hostport", "http://"+httpbinHost); err != nil {
-		sh.RunV("docker", append(dockerComposeArgs, "logs", "traefik")...)
+	if err = sh.RunV("go", "run", "github.com/corazawaf/coraza/v3/http/e2e/cmd/httpe2e@v3.2.1", "--proxy-hostport",
+		"http://"+proxyHost, "--httpbin-hostport", "http://"+httpbinHost); err == nil {
+		err = sh.RunV("python3", "scripts/body_limits.py", "--base", "http://"+proxyHost, "--limit", "13631488", "--check-order")
 	}
-
+	if err != nil {
+		sh.RunV("docker", append(dockerComposeArgs, "logs", "e2e_traefik_"+string(source))...)
+	}
 	return err
 }
 
 func E2E() error {
-	return e2e(e2eSourceRemote)
+	return E2ELocal()
 }
 
 func E2ELocal() error {
-	if err := copy(".traefik.yml", "build/.traefik.yml"); err != nil {
+	if err := PrepareLocal(); err != nil {
 		return err
 	}
-
-	if err := DownloadArtifact(); err != nil {
-		return err
-	}
-
 	return e2e(e2eSourceLocal)
 }
 
@@ -200,7 +256,6 @@ func UpdateVersion() error {
 	renderedStaticConfig := strings.Replace(staticConfig, "{{version}}", os.Getenv("VERSION"), 1)
 
 	return errors.Join(
-		os.WriteFile("config-static.yaml", []byte(renderedStaticConfig), 0644),
 		os.WriteFile("e2e/config-static.remote.yaml", []byte(renderedStaticConfig), 0644),
 	)
 }

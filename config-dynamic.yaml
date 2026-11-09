@@ -6,6 +6,7 @@ http:
       entryPoints:
         - web
       middlewares:
+        - request-size-limit
         - waf
 
   services:
@@ -15,11 +16,21 @@ http:
           - url: http://httpbin:8000
 
   middlewares:
+    # Example for this service only: 13 MiB. Set an appropriate limit per route.
+    # This must run before the WAF, including in DetectionOnly mode.
+    request-size-limit:
+      buffering:
+        maxRequestBodyBytes: 13631488
+        memRequestBodyBytes: 1048576
     waf:
       plugin:
         coraza:
           directives:
+            - Include @coraza.conf-recommended
+            # WASM cannot spill inspected bodies to disk: keep both limits equal.
+            - SecRequestBodyLimit 13107200
+            - SecRequestBodyInMemoryLimit 13107200
             - SecRuleEngine On
-            - SecDebugLog /dev/stdout
-            - SecDebugLogLevel 9
-            - SecRule REQUEST_URI "@streq /admin" "id:101,phase:1,log,deny,status:403"
+            - SecAuditEngine Off
+            - Include @crs-setup.conf.example
+            - Include @owasp_crs/**.conf

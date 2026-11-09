@@ -1,31 +1,40 @@
 name: CI
-
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE"
+    branches: [main]
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE"
-
-env:
-  GO_VERSION: "1.21.x"
-
+  workflow_dispatch:
+    inputs:
+      wasm_version:
+        description: Reviewed WASM release tag
+        required: true
+      wasm_sha256:
+        description: Reviewed WASM SHA256
+        required: true
+permissions:
+  contents: read
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Go
-        uses: actions/setup-go@v3
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Run e2e tests
-        run: go run mage.go e2e
+      - uses: jdx/mise-action@v3
+      - run: go test -tags=mage magefile.go magefile_test.go
+      - run: docker compose config --quiet
+  integration:
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - run: go run mage.go e2eLocal
+        env:
+          VERSION: ${{ inputs.wasm_version }}
+          WASM_SHA256: ${{ inputs.wasm_sha256 }}
+      - run: docker compose -p coraza-crs up -d traefik
+      - run: python3 scripts/verify_local_modes.py
+      - if: failure()
+        run: docker compose -p coraza-crs logs
+      - if: always()
+        run: docker compose -p coraza-crs down

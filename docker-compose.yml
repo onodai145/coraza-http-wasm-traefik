@@ -1,14 +1,13 @@
-version: '3.7'
-
 services:
   traefik_base:
-    image: traefik:v3.2.0
+    image: traefik:v3.6.0
     ports:
-      - 8080:80
+      - ${TRAEFIK_PORT:-18080}:80
     command:
       - "--configFile=/etc/traefik/config-static.yaml"
     volumes:
-      - ./:/etc/traefik
+      - ./:/etc/traefik:ro
+      - ./build:/plugins-local/src/github.com/onodai145/coraza-http-wasm-traefik:ro
 
   traefik:
     extends: traefik_base
@@ -22,4 +21,4 @@ services:
       - MAX_BODY_SIZE=15728640 # 15 MiB
     command: [ "/bin/go-httpbin", "-port", "8000" ]
     ports:
-      - 8000:8000
+      - ${HTTPBIN_PORT:-18000}:8000
